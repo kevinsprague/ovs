@@ -2806,12 +2806,8 @@ revalidate(struct revalidator *revalidator)
             if (result != UKEY_KEEP) {
                 /* Takes ownership of 'recircs'. */
                 if (result == UKEY_DELETE && reason) {
-                    char *usdt_str; 
-                    struct ds ds;
-                    odp_format_ufid(&ukey->ufid,&ds);
-                    usdt_str = ds_cstr(&ds);
                     OVS_USDT_PROBE(ofproto_dpif_upcall_revalidate,
-                        flow_delete, reason, &ukey->ufid,usdt_str);
+                        flow_delete, reason, &ukey->ufid);
                 }
                 reval_op_init(&ops[n_ops++], result, udpif, ukey, &recircs,
                               &odp_actions);

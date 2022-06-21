@@ -10,13 +10,12 @@ from scapy.layers.l2 import Ether
 import struct
 
 
-ufid_filter = False
 bpf_src = """
 #include <linux/sched.h>
 #include <linux/types.h>
 #include <uapi/linux/ptrace.h>
 
-#define MAX_KEY      <MAX_KEY_VAL>
+#define MAX_KEY     2048 
 
 struct flow_put {
     u32 flags;
@@ -36,7 +35,7 @@ struct event_t {
     unsigned char key[MAX_KEY];
 };
 
-BPF_RINGBUF_OUTPUT(events, 1024);
+BPF_RINGBUF_OUTPUT(events, <BUFFER_PAGE_COUNT>);
 
 int watch_reval(struct pt_regs *ctx) {
     uint64_t addr;
@@ -45,7 +44,7 @@ int watch_reval(struct pt_regs *ctx) {
         return 1;
     data->ts = bpf_ktime_get_ns();
     bpf_usdt_readarg(1, ctx, &data->reason);
-    bpf_usdt_readarg(2, ctx, &addr); // should read the pointer to the ufid?
+    bpf_usdt_readarg(2, ctx, &addr); 
     bpf_probe_read(&data->ufid,sizeof(data->ufid),(void *)addr);
     events.ringbuf_submit(data, 0);
     return 0;
@@ -62,7 +61,7 @@ int watch_put(struct pt_regs *ctx) {
     bpf_usdt_readarg(2, ctx, &addr);
     bpf_probe_read(&f, sizeof(struct flow_put), (void *) addr);
     bpf_probe_read(&data->ufid, sizeof(data->ufid),(void *) f.ufid_loc);
-    if (f.key_len > MAX_KEY)
+    if (f.key_len > MAX_KEY) // verifier fails without this check.
         f.key_len = MAX_KEY;
     data->key_size = f.key_len;
     bpf_probe_read(&data->key, f.key_len,(void*)f.key_ptr);
@@ -75,10 +74,10 @@ int watch_put(struct pt_regs *ctx) {
 def format_ufid(ufid):
     result = "ufid:%08x-%04x-%04x-%04x-%04x%08x" \
     % (ufid[0],
-    ufid[1]>>16,
+    ufid[1] >> 16,
     ufid[1] & 0xffff,
-    ufid[2]>>16,
-    ufid[2]&0xffff,
+    ufid[2] >> 16,
+    ufid[2] & 0xffff,
     ufid[3])
     return result
                   
@@ -190,16 +189,6 @@ def get_ovs_key_attr_str(attr):
     if attr < 0 or attr > len(ovs_key_attr):
         return "<UNKNOWN>"
     return ovs_key_attr[attr]
-            
-    
-
-def buffer_size_type(astr, min=64, max=2048):
-    value = int(astr)
-    if min <= value <= max:
-        return value
-    else:
-        raise argparse.ArgumentTypeError(
-            "value not in range {}-{}".format(min, max))
 
 def handle_event(ctx,data,size):
     event = b["events"].event(data)
@@ -217,10 +206,6 @@ def main():
     parser.add_argument("--buffer-page-count",
                         help="Number of BPF ring buffer pages, default 1024",
                         type=int, default=1024, metavar="NUMBER")
-    parser.add_argument("-f", "--flow-key-size",
-                        help="Set maximum flow key size to capture, "
-                        "default 64", type=buffer_size_type, default=64,
-                        metavar="[64-2048]")
     parser.add_argument("-k", "--print-flow-keys",
                         help="Print flow keys captured?",
                         type=bool, const=True,default=False,nargs="?")
@@ -249,7 +234,6 @@ def main():
     if args.mask is not None:
         print("mask is: ")
     u = USDT(pid=int(vswitch_pid))
-    # nonzero chance this should check whether the pid is a real thing.
     try:
         u.enable_probe(probe="op_flow_put", fn_name="watch_put")
     except USDTException as e:
@@ -263,8 +247,7 @@ def main():
         print(str(e))
         sys.exit(-1)
     
-    source = bpf_src.replace("<MAX_KEY_VAL>", str(args.flow_key_size))
-    source = source.replace("<BUFFER_PAGE_COUNT>",
+    source = bpf_src.replace("<BUFFER_PAGE_COUNT>",
                             str(args.buffer_page_count))
     b = BPF(text=source, usdt_contexts=[u],debug=args.debug)
     b["events"].open_ring_buffer(handle_event)
